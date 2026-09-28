@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 
 from app.database import get_connection
 from app.temple.analytics import TempleAnalytics, ReportWindow
@@ -50,8 +50,23 @@ def publish_safety_policy(safety_policy_id: int, payload: SafetyPolicyPublish):
 
 
 @router.post("/authorizations", status_code=201)
-def add_authorization(payload: AuthorizationCreate):
-    return service().add_authorization(payload.model_dump())
+def add_authorization(payload: AuthorizationCreate, response: Response):
+    result = service().add_authorization(payload.model_dump())
+    if result.outcome == "replayed":
+        # 幂等重试返回原记录，与首次创建的 201 明确区分
+        response.status_code = 200
+    body = dict(result.body)
+    body["registration"] = result.outcome
+    return body
+
+
+@router.get("/authorizations/audit")
+def authorization_audit(
+    source_approval_id: str | None = None,
+    event_type: str | None = Query(default=None, pattern="^(created|replayed|content_conflict|state_replay_blocked)$"),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    return {"items": service().list_authorization_events(source_approval_id, event_type, limit)}
 
 
 @router.post("/observations", status_code=202)

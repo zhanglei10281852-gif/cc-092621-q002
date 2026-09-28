@@ -60,8 +60,8 @@ def command_temple_demo() -> int:
                 "steward_hash": "steward-demo-0000000001",
                 "temple_code": "lingyun-temple",
                 "authorization_code": "festival-duty",
-                "valid_from": "2026-09-26T00:00:00Z",
-                "valid_until": "2026-09-27T00:00:00Z",
+                "valid_from": "2020-01-01T00:00:00Z",
+                "valid_until": "2030-12-31T00:00:00Z",
                 "source_approval_id": "demo-approval-000001",
             },
         )

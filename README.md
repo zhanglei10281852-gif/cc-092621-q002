@@ -50,6 +50,16 @@ curl -sS http://127.0.0.1:8432/api/system/health
 
 香火安全、通风处置和修缮协同接口统一使用 `/api/temple` 前缀。
 
+### 来源审批号的不可变业务身份
+
+`POST /api/temple/authorizations` 以 `source_approval_id` 为不可变业务身份，寺院、值守员、授权类别与有效期构成其内容指纹：
+
+- **新增**：审批号首次到达返回 `201`，响应体 `registration="created"`；
+- **幂等重试**：同审批号、内容完全一致时返回原记录与 `200`，响应体 `registration="replayed"`，授权已暂停、取消或到期时状态保持不变（审计记为 `state_replay_blocked`）；
+- **内容冲突**：寺院、值守员、授权类别或有效期任一不同时返回 `409`，`error.context.differences` 给出逐字段差异摘要（值守员仅以脱敏指纹出现），不覆盖原记录。
+
+冲突与首次写入在同一事务内审计落库；并发同单最终只保留一个版本。可通过 `GET /api/temple/authorizations/audit?source_approval_id=...` 按审批号查询 `created` / `replayed` / `content_conflict` / `state_replay_blocked` 事件链。
+
 ## 测试
 
 ```bash

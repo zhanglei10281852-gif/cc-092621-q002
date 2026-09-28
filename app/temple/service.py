@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
@@ -9,9 +10,21 @@ from app.core.clock import Clock, SystemClock, from_storage, to_storage
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.core.security import request_fingerprint
 from app.database import get_connection, transaction
+from app.temple.authorization_ingest import (
+    canonical_content,
+    content_digest,
+    describe_differences,
+    stored_content,
+)
 from app.temple.repository import TempleRepository
 from app.temple.rules import DEFAULT_RULES, allocation_for, canonical_rules, judge_quality
 from app.temple.schema import ensure_temple_schema
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationResult:
+    body: dict[str, Any]
+    outcome: str  # created | replayed
 
 
 class TempleSafetyService:
@@ -102,7 +115,15 @@ class TempleSafetyService:
             )
             return TempleRepository._safety_policy(TempleRepository(connection).safety_policy_by_id(safety_policy_id))
 
-    def add_authorization(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def add_authorization(self, payload: dict[str, Any], *, actor: str = "upstream") -> AuthorizationResult:
+        """登记来源审批。
+
+        来源审批号是不可变业务身份：
+        - 首次到达：插入一条授权（created）；
+        - 同审批号、同内容：返回原记录（replayed），不改变授权状态；
+        - 同审批号、内容有任何差异：拒绝并记录内容冲突审计（content_conflict）。
+        首次写入与冲突审计在同一个 IMMEDIATE 事务内完成，并发申请只会留下一个版本。
+        """
         temple = self._temple(payload["temple_code"])
         try:
             start = to_storage(from_storage(payload["valid_from"]))
@@ -111,16 +132,194 @@ class TempleSafetyService:
             raise ValidationError("权益有效期格式不正确") from exc
         if end <= start:
             raise ValidationError("权益结束时间必须晚于开始时间")
+        incoming = canonical_content(
+            steward_hash=payload["steward_hash"],
+            temple_id=temple["id"],
+            authorization_code=payload["authorization_code"],
+            valid_from=start,
+            valid_until=end,
+        )
+        digest = content_digest(incoming)
+        approval_id = payload["source_approval_id"]
         now = to_storage(self.clock.now())
+
         with transaction(immediate=True) as connection:
-            existing = connection.execute("SELECT * FROM steward_authorizations WHERE source_approval_id=?", (payload["source_approval_id"],)).fetchone()
-            if existing is not None:
-                return dict(existing)
-            cursor = connection.execute(
-                "INSERT INTO steward_authorizations(steward_hash,temple_id,authorization_code,valid_from,valid_until,source_approval_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                (payload["steward_hash"], temple["id"], payload["authorization_code"], start, end, payload["source_approval_id"], now, now),
+            existing = connection.execute(
+                "SELECT * FROM steward_authorizations WHERE source_approval_id=?",
+                (approval_id,),
+            ).fetchone()
+
+            if existing is None:
+                try:
+                    cursor = connection.execute(
+                        "INSERT INTO steward_authorizations(steward_hash,temple_id,authorization_code,valid_from,valid_until,source_approval_id,content_digest,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (incoming["steward_hash"], incoming["temple_id"], incoming["authorization_code"], incoming["valid_from"], incoming["valid_until"], approval_id, digest, now, now),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    # 并发竞争：对端已抢先提交，改为按既存记录判定为重放或冲突
+                    existing = connection.execute(
+                        "SELECT * FROM steward_authorizations WHERE source_approval_id=?",
+                        (approval_id,),
+                    ).fetchone()
+                    if existing is None:
+                        raise ConflictError("授权登记并发冲突，请按来源审批号重试查询") from exc
+                else:
+                    self._authorization_event(
+                        connection,
+                        source_approval_id=approval_id,
+                        authorization_id=cursor.lastrowid,
+                        event_type="created",
+                        state="active",
+                        content_digest=digest,
+                        actor=actor,
+                        now=now,
+                    )
+                    row = connection.execute(
+                        "SELECT * FROM steward_authorizations WHERE id=?",
+                        (cursor.lastrowid,),
+                    ).fetchone()
+                    return AuthorizationResult(dict(row), "created")
+
+            result, conflict = self._resolve_existing_authorization(
+                connection,
+                existing=existing,
+                incoming=incoming,
+                approval_id=approval_id,
+                incoming_temple_code=payload["temple_code"],
+                digest=digest,
+                actor=actor,
+                now=now,
             )
-            return dict(connection.execute("SELECT * FROM steward_authorizations WHERE id=?", (cursor.lastrowid,)).fetchone())
+            if result is not None:
+                return result
+
+        # 冲突审计已随事务提交，再向调用方返回拒绝
+        raise conflict
+
+    def _resolve_existing_authorization(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        existing: sqlite3.Row,
+        incoming: dict[str, Any],
+        approval_id: str,
+        incoming_temple_code: str,
+        digest: str,
+        actor: str,
+        now: str,
+    ) -> tuple[AuthorizationResult | None, ConflictError | None]:
+        """对既存授权判定幂等重放或内容冲突；冲突时审计已落库并返回待抛异常。"""
+        # 兼容历史行：content_digest 可能尚未回填，仅在确属同一内容时补齐指纹
+        existing_digest = existing["content_digest"] or content_digest(stored_content(existing))
+
+        if existing_digest == digest:
+            if existing["content_digest"] != existing_digest:
+                connection.execute(
+                    "UPDATE steward_authorizations SET content_digest=? WHERE id=?",
+                    (existing_digest, existing["id"]),
+                )
+            # 重放绝不改变状态：授权已暂停/取消/到期时留下专门的阻断审计事件
+            event_type = "replayed" if existing["state"] == "active" else "state_replay_blocked"
+            self._authorization_event(
+                connection,
+                source_approval_id=approval_id,
+                authorization_id=existing["id"],
+                event_type=event_type,
+                state=existing["state"],
+                content_digest=existing_digest,
+                actor=actor,
+                now=now,
+            )
+            result = dict(existing)
+            result["content_digest"] = existing_digest
+            return AuthorizationResult(result, "replayed"), None
+
+        differences = describe_differences(
+            existing,
+            existing_temple_code=self._temple_code(connection, existing["temple_id"]),
+            incoming_steward_hash=incoming["steward_hash"],
+            incoming_temple_code=incoming_temple_code,
+            incoming_authorization_code=incoming["authorization_code"],
+            incoming_valid_from=incoming["valid_from"],
+            incoming_valid_until=incoming["valid_until"],
+        )
+        self._authorization_event(
+            connection,
+            source_approval_id=approval_id,
+            authorization_id=existing["id"],
+            event_type="content_conflict",
+            state=existing["state"],
+            content_digest=existing_digest,
+            differences=differences,
+            actor=actor,
+            now=now,
+        )
+        return None, ConflictError(
+            "来源审批号已登记为不同的授权内容，拒绝重复登记",
+            context={
+                "source_approval_id": approval_id,
+                "existing_state": existing["state"],
+                "differences": differences,
+            },
+        )
+
+    def list_authorization_events(
+        self,
+        source_approval_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM authorization_audit_events"
+        conditions: list[str] = []
+        params: list[Any] = []
+        if source_approval_id:
+            conditions.append("source_approval_id=?")
+            params.append(source_approval_id)
+        if event_type:
+            conditions.append("event_type=?")
+            params.append(event_type)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        events = []
+        for row in self.connection.execute(sql, params).fetchall():
+            item = dict(row)
+            item["differences"] = json.loads(item.pop("differences_json"))
+            events.append(item)
+        return events
+
+    @staticmethod
+    def _temple_code(connection: sqlite3.Connection, temple_id: int) -> str:
+        row = connection.execute("SELECT code FROM temple_sites WHERE id=?", (temple_id,)).fetchone()
+        return row["code"] if row is not None else f"temple-id-{temple_id}"
+
+    @staticmethod
+    def _authorization_event(
+        connection: sqlite3.Connection,
+        *,
+        source_approval_id: str,
+        authorization_id: int | None,
+        event_type: str,
+        state: str,
+        content_digest: str,
+        actor: str,
+        now: str,
+        differences: list[dict[str, str]] | None = None,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO authorization_audit_events(source_approval_id,authorization_id,event_type,state,content_digest,differences_json,actor,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                source_approval_id,
+                authorization_id,
+                event_type,
+                state,
+                content_digest,
+                json.dumps(differences or [], ensure_ascii=False, sort_keys=True),
+                actor,
+                now,
+            ),
+        )
 
     def ingest_observation(self, payload: dict[str, Any]) -> dict[str, Any]:
         temple = self._temple(payload["temple_code"])

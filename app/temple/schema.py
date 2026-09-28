@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from app.temple.authorization_ingest import content_digest, stored_content
+
 TEMPLE_SCHEMA = r'''
 CREATE TABLE IF NOT EXISTS temple_sites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,10 +144,23 @@ CREATE TABLE IF NOT EXISTS steward_authorizations (
     valid_until TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','suspended','expired','cancelled')),
     source_approval_id TEXT NOT NULL UNIQUE,
+    content_digest TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_authorizations_lookup ON steward_authorizations(steward_hash,temple_id,state,valid_from,valid_until);
+CREATE TABLE IF NOT EXISTS authorization_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_approval_id TEXT NOT NULL,
+    authorization_id INTEGER REFERENCES steward_authorizations(id),
+    event_type TEXT NOT NULL CHECK(event_type IN ('created','replayed','content_conflict','state_replay_blocked')),
+    state TEXT NOT NULL DEFAULT '',
+    content_digest TEXT NOT NULL DEFAULT '',
+    differences_json TEXT NOT NULL DEFAULT '[]',
+    actor TEXT NOT NULL DEFAULT 'upstream',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_authorization_audit_lookup ON authorization_audit_events(source_approval_id,id);
 CREATE TABLE IF NOT EXISTS restoration_campaigns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     temple_id INTEGER NOT NULL REFERENCES temple_sites(id),
@@ -204,3 +219,19 @@ CREATE INDEX IF NOT EXISTS idx_restoration_events_resource ON restoration_events
 
 def ensure_temple_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(TEMPLE_SCHEMA)
+    _migrate_authorization_identity(connection)
+
+
+def _migrate_authorization_identity(connection: sqlite3.Connection) -> None:
+    """旧库补列并回填内容摘要；新库的建表语句已包含该列，此处自动跳过。"""
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(steward_authorizations)").fetchall()}
+    if "content_digest" not in columns:
+        connection.execute("ALTER TABLE steward_authorizations ADD COLUMN content_digest TEXT NOT NULL DEFAULT ''")
+    rows = connection.execute(
+        "SELECT * FROM steward_authorizations WHERE content_digest='' OR content_digest IS NULL"
+    ).fetchall()
+    for row in rows:
+        connection.execute(
+            "UPDATE steward_authorizations SET content_digest=? WHERE id=?",
+            (content_digest(stored_content(row)), row["id"]),
+        )
