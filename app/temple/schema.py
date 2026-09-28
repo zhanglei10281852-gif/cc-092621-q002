@@ -142,10 +142,34 @@ CREATE TABLE IF NOT EXISTS steward_authorizations (
     valid_until TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','suspended','expired','cancelled')),
     source_approval_id TEXT NOT NULL UNIQUE,
+    content_digest TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_authorizations_lookup ON steward_authorizations(steward_hash,temple_id,state,valid_from,valid_until);
+CREATE TABLE IF NOT EXISTS authorization_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    authorization_id INTEGER NOT NULL REFERENCES steward_authorizations(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL CHECK(event_type IN ('suspended','cancelled','expired')),
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_authorization_events ON authorization_events(authorization_id,id);
+CREATE TABLE IF NOT EXISTS authorization_conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_approval_id TEXT NOT NULL,
+    authorization_id INTEGER NOT NULL REFERENCES steward_authorizations(id),
+    incoming_digest TEXT NOT NULL,
+    steward_hint TEXT NOT NULL DEFAULT '',
+    temple_code TEXT NOT NULL DEFAULT '',
+    authorization_code TEXT NOT NULL DEFAULT '',
+    valid_from TEXT NOT NULL DEFAULT '',
+    valid_until TEXT NOT NULL DEFAULT '',
+    differences_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_authorization_conflicts_lookup ON authorization_conflicts(source_approval_id,id);
 CREATE TABLE IF NOT EXISTS restoration_campaigns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     temple_id INTEGER NOT NULL REFERENCES temple_sites(id),
@@ -204,3 +228,6 @@ CREATE INDEX IF NOT EXISTS idx_restoration_events_resource ON restoration_events
 
 def ensure_temple_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(TEMPLE_SCHEMA)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(steward_authorizations)").fetchall()}
+    if "content_digest" not in columns:
+        connection.execute("ALTER TABLE steward_authorizations ADD COLUMN content_digest TEXT NOT NULL DEFAULT ''")

@@ -147,6 +147,36 @@ class TempleRepository:
             (steward_hash, temple_id, now, now),
         ).fetchone()
 
+    def authorization_by_source(self, source_approval_id: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM steward_authorizations WHERE source_approval_id=?",
+            (source_approval_id,),
+        ).fetchone()
+
+    def authorization_by_id(self, authorization_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM steward_authorizations WHERE id=?",
+            (authorization_id,),
+        ).fetchone()
+
+    def authorization_events(self, authorization_id: int) -> list[dict[str, Any]]:
+        return rows_dict(self.connection.execute(
+            "SELECT * FROM authorization_events WHERE authorization_id=? ORDER BY id",
+            (authorization_id,),
+        ).fetchall())
+
+    def authorization_conflicts(self, authorization_id: int) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            "SELECT * FROM authorization_conflicts WHERE authorization_id=? ORDER BY id",
+            (authorization_id,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["differences"] = json.loads(item.pop("differences_json"))
+            result.append(item)
+        return result
+
     def mitigation_session_detail(self, mitigation_session_id: int) -> dict[str, Any] | None:
         row = self.mitigation_session_by_id(mitigation_session_id)
         if row is None:

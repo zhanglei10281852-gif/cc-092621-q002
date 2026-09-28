@@ -52,6 +52,11 @@ class AuthorizationCreate(BaseModel):
     source_approval_id: str = Field(min_length=4, max_length=160)
 
 
+class AuthorizationLifecycle(BaseModel):
+    actor: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=2, max_length=500)
+
+
 class ExperienceObservationCreate(BaseModel):
     observation_key: str = Field(min_length=6, max_length=160)
     temple_code: str = Field(min_length=2, max_length=64)

@@ -112,7 +112,7 @@ def test_mitigation_requires_authorization_and_releases_ventilation(client):
             "temple_code": "lingyun-temple",
             "authorization_code": "festival-duty",
             "valid_from": "2026-09-26T00:00:00Z",
-            "valid_until": "2026-09-27T00:00:00Z",
+            "valid_until": "2030-09-27T00:00:00Z",
             "source_approval_id": "order-000001",
         },
     )
@@ -141,7 +141,7 @@ def test_expired_mitigation_session_reopens_safety_incident_with_fixed_clock(cli
             "temple_code": "lingyun-temple",
             "authorization_code": "festival-duty",
             "valid_from": "2026-09-26T00:00:00Z",
-            "valid_until": "2026-09-27T00:00:00Z",
+            "valid_until": "2030-09-27T00:00:00Z",
             "source_approval_id": "order-000002",
         },
     )
@@ -172,7 +172,7 @@ def test_ventilation_limit_rejects_second_mitigation_session(client):
                 "temple_code": "lingyun-temple",
                 "authorization_code": "festival-duty",
                 "valid_from": "2026-09-26T00:00:00Z",
-                "valid_until": "2026-09-27T00:00:00Z",
+                "valid_until": "2030-09-27T00:00:00Z",
                 "source_approval_id": f"order-ventilation-{index:03d}",
             },
         )

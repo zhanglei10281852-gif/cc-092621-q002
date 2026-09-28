@@ -9,6 +9,7 @@ from app.core.clock import Clock, SystemClock, from_storage, to_storage
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.core.security import request_fingerprint
 from app.database import get_connection, transaction
+from app.temple.authorizations import AuthorizationService
 from app.temple.repository import TempleRepository
 from app.temple.rules import DEFAULT_RULES, allocation_for, canonical_rules, judge_quality
 from app.temple.schema import ensure_temple_schema
@@ -20,6 +21,7 @@ class TempleSafetyService:
         ensure_temple_schema(self.connection)
         self.clock = clock or SystemClock()
         self.repository = TempleRepository(self.connection)
+        self.authorizations = AuthorizationService(self.connection, self.clock)
 
     def create_temple(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = to_storage(self.clock.now())
@@ -103,24 +105,7 @@ class TempleSafetyService:
             return TempleRepository._safety_policy(TempleRepository(connection).safety_policy_by_id(safety_policy_id))
 
     def add_authorization(self, payload: dict[str, Any]) -> dict[str, Any]:
-        temple = self._temple(payload["temple_code"])
-        try:
-            start = to_storage(from_storage(payload["valid_from"]))
-            end = to_storage(from_storage(payload["valid_until"]))
-        except ValueError as exc:
-            raise ValidationError("权益有效期格式不正确") from exc
-        if end <= start:
-            raise ValidationError("权益结束时间必须晚于开始时间")
-        now = to_storage(self.clock.now())
-        with transaction(immediate=True) as connection:
-            existing = connection.execute("SELECT * FROM steward_authorizations WHERE source_approval_id=?", (payload["source_approval_id"],)).fetchone()
-            if existing is not None:
-                return dict(existing)
-            cursor = connection.execute(
-                "INSERT INTO steward_authorizations(steward_hash,temple_id,authorization_code,valid_from,valid_until,source_approval_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                (payload["steward_hash"], temple["id"], payload["authorization_code"], start, end, payload["source_approval_id"], now, now),
-            )
-            return dict(connection.execute("SELECT * FROM steward_authorizations WHERE id=?", (cursor.lastrowid,)).fetchone())
+        return self.authorizations.register(payload)
 
     def ingest_observation(self, payload: dict[str, Any]) -> dict[str, Any]:
         temple = self._temple(payload["temple_code"])

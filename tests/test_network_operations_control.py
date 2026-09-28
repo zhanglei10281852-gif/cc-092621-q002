@@ -102,7 +102,7 @@ def test_closure_blocks_mitigation(client):
     safety_policy = prepare(client)
     client.post(
         "/api/temple/authorizations",
-        json={"steward_hash": "steward-closure-01", "temple_code": "shanmen-temple", "authorization_code": "ceremony-duty", "valid_from": "2026-09-26T00:00:00Z", "valid_until": "2026-09-27T00:00:00Z", "source_approval_id": "closure-order"},
+        json={"steward_hash": "steward-closure-01", "temple_code": "shanmen-temple", "authorization_code": "ceremony-duty", "valid_from": "2026-09-26T00:00:00Z", "valid_until": "2030-09-27T00:00:00Z", "source_approval_id": "closure-order"},
     )
     observation = client.post(
         "/api/temple/observations",

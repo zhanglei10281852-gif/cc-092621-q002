@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 
 from app.database import get_connection
 from app.temple.analytics import TempleAnalytics, ReportWindow
-from app.temple.schemas import MitigationStart, IncenseProfileCreate, BatchObservations, AuthorizationCreate, ExperienceObservationCreate, SafetyPolicyCreate, SafetyPolicyPublish, TempleCreate, HallCreate, MitigationSessionFinish
+from app.temple.schemas import MitigationStart, IncenseProfileCreate, BatchObservations, AuthorizationCreate, AuthorizationLifecycle, ExperienceObservationCreate, SafetyPolicyCreate, SafetyPolicyPublish, TempleCreate, HallCreate, MitigationSessionFinish
 from app.temple.service import TempleSafetyService
 
 router = APIRouter(prefix="/api/temple", tags=["寺院香火安全与修缮协同"])
@@ -49,9 +49,31 @@ def publish_safety_policy(safety_policy_id: int, payload: SafetyPolicyPublish):
     return service().publish_safety_policy(safety_policy_id, payload.actor, payload.effective_from)
 
 
-@router.post("/authorizations", status_code=201)
-def add_authorization(payload: AuthorizationCreate):
-    return service().add_authorization(payload.model_dump())
+@router.post("/authorizations")
+def add_authorization(payload: AuthorizationCreate, response: Response):
+    result = service().add_authorization(payload.model_dump())
+    response.status_code = 201 if result.get("request_outcome") == "created" else 200
+    return result
+
+
+@router.get("/authorizations/{authorization_id}")
+def authorization_detail(authorization_id: int):
+    return service().authorizations.detail(authorization_id)
+
+
+@router.post("/authorizations/{authorization_id}/suspend")
+def suspend_authorization(authorization_id: int, payload: AuthorizationLifecycle):
+    return service().authorizations.suspend_authorization(authorization_id, payload.actor, payload.reason)
+
+
+@router.post("/authorizations/{authorization_id}/cancel")
+def cancel_authorization(authorization_id: int, payload: AuthorizationLifecycle):
+    return service().authorizations.cancel_authorization(authorization_id, payload.actor, payload.reason)
+
+
+@router.post("/authorizations/expire")
+def expire_authorizations(actor: str = Query(default="authorization-reaper", min_length=1)):
+    return service().authorizations.expire_due_authorizations(actor)
 
 
 @router.post("/observations", status_code=202)

@@ -60,8 +60,8 @@ def command_temple_demo() -> int:
                 "steward_hash": "steward-demo-0000000001",
                 "temple_code": "lingyun-temple",
                 "authorization_code": "festival-duty",
-                "valid_from": "2026-09-26T00:00:00Z",
-                "valid_until": "2026-09-27T00:00:00Z",
+                "valid_from": "2026-01-01T00:00:00Z",
+                "valid_until": "2030-01-01T00:00:00Z",
                 "source_approval_id": "demo-approval-000001",
             },
         )
@@ -93,7 +93,11 @@ def command_temple_demo() -> int:
         "mitigation_session_id": started.json().get("id") if started.status_code == 200 else None,
     }
     print(json.dumps(result, ensure_ascii=False))
-    return 0 if [seeded.status_code, authorization.status_code, observation.status_code, started.status_code] == [200, 201, 202, 200] else 1
+    expected = [{200, 201}, {200, 201}, {202}, {200}]
+    accepted = all(status in allowed for status, allowed in zip(
+        [seeded.status_code, authorization.status_code, observation.status_code, started.status_code], expected
+    ))
+    return 0 if accepted else 1
 
 
 def main() -> int:

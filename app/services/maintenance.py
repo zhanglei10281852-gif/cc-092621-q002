@@ -33,7 +33,8 @@ class MaintenanceService:
         "department_memberships", "audit_events", "background_jobs", "temple_sites",
         "worship_halls", "incense_profiles", "safety_policy_versions", "incense_observations",
         "safety_incidents", "mitigation_sessions", "ventilation_reservations", "mitigation_events",
-        "steward_authorizations", "restoration_campaigns", "restoration_targets", "hall_closure_windows",
+        "steward_authorizations", "authorization_events", "authorization_conflicts",
+        "restoration_campaigns", "restoration_targets", "hall_closure_windows",
         "restoration_events",
     )
 
